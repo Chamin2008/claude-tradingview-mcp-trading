@@ -1,50 +1,63 @@
 {
-  "watchlist": ["BTCUSDT"],
-  "default_timeframe": "1m",
+  "watchlist": ["XBTUSDT"],
+  "default_timeframe": "4H",
 
   "strategy": {
-    "name": "VWAP + RSI(3) + EMA(8) Scalping Strategy",
-    "sources": ["Lewis Jackson"],
-    "description": "Three indicators, each doing a different job. EMA(8) for trend direction, VWAP for session bias, RSI(3) for entry timing. All three must align before a trade fires."
+    "name": "Tone Vays — Multi-Timeframe Exhaustion & RSI Divergence",
+    "sources": ["Tone Vays (@ToneVays)", "https://www.youtube.com/channel/UCbiWJYRg8luWHnmNkJRZEnw"],
+    "description": "Derived from Tone Vays' Q&A sessions and trading videos. Core logic: wait for trend exhaustion on the 4H chart (RSI(3) deeply oversold in an uptrend, or deeply overbought in a downtrend), confirmed by price position relative to VWAP and EMA(8). Only trade when all three layers agree. Conservative sizing — never risk more than 1% per trade. Tone Vays' actual system uses DeMark Sequential (MRI buy/sell signals); RSI(3) is used here as the closest computable proxy for that exhaustion signal."
   },
 
   "indicators": {
-    "ema_8": "Trend direction. Price above EMA(8) = bullish momentum. Below = bearish.",
-    "vwap": "Session bias. Price above VWAP = buyers in control. Below = sellers. Resets at midnight UTC.",
-    "rsi_3": "Entry timing. RSI on 3 candles only — extremely sensitive. Below 30 in an uptrend = snap-back setup. Above 70 in a downtrend = reversal likely."
+    "ema_8": "Trend direction on the 4H chart. Price above EMA(8) = momentum is up. Below = momentum is down. Tone Vays uses a declining moving average as a resistance signal — if price is below a declining EMA, the trend is bearish.",
+    "vwap": "Session bias. Price above VWAP = institutional buyers in control. Below = sellers. Tone Vays looks for price to be on the right side of key averages before entering.",
+    "rsi_3": "Exhaustion signal. RSI(3) is the computable proxy for Tone Vays' DeMark Sequential (MRI buy/sell). When RSI(3) < 20 in an uptrend, short-term sellers are exhausted — snap-back likely. When RSI(3) > 80 in a downtrend, buyers are exhausted — reversal likely. Tone Vays waits for exhaustion to show on both weekly AND daily — we apply the same principle within the 4H chart."
   },
 
   "bias_criteria": {
-    "bullish": ["Price is above VWAP", "Price is above EMA(8)"],
-    "bearish": ["Price is below VWAP", "Price is below EMA(8)"]
+    "bullish": [
+      "Price is above VWAP — buyers in control for the session",
+      "Price is above EMA(8) — 4H uptrend intact"
+    ],
+    "bearish": [
+      "Price is below VWAP — sellers in control",
+      "Price is below EMA(8) — 4H downtrend intact"
+    ],
+    "neutral": [
+      "Price is above one but not both — no clear bias, no trade"
+    ]
   },
 
   "entry_rules": {
     "long": [
-      "Price is above VWAP — buyers in control for the session",
-      "Price is above EMA(8) — uptrend confirmed",
-      "RSI(3) has dropped below 30 — short-term pullback in an uptrend, snap-back likely"
+      "Price is above VWAP — session bias is bullish",
+      "Price is above EMA(8) — 4H trend is up",
+      "RSI(3) has dropped below 20 — exhaustion signal, snap-back setup (Tone Vays' MRI buy proxy)",
+      "Price is within 1.5% of VWAP — not overextended, risk/reward is acceptable"
     ],
     "short": [
-      "Price is below VWAP — sellers in control",
-      "Price is below EMA(8) — downtrend confirmed",
-      "RSI(3) has spiked above 70 — overbought in a downtrend, reversal likely"
+      "Price is below VWAP — session bias is bearish",
+      "Price is below EMA(8) — 4H trend is down",
+      "RSI(3) has risen above 80 — exhaustion signal, reversal setup (Tone Vays' MRI sell proxy)",
+      "Price is within 1.5% of VWAP — not overextended, risk/reward is acceptable"
     ]
   },
 
   "exit_rules": [
-    "Exit when RSI(3) crosses back above 50 (for longs) or below 50 (for shorts)",
-    "Hard stop: 0.3% below entry for longs, 0.3% above entry for shorts",
-    "Take profit at next VWAP touch or EMA(8) cross"
+    "Exit long when RSI(3) crosses back above 60 or price touches EMA(8) from below",
+    "Exit short when RSI(3) drops back below 40 or price touches EMA(8) from above",
+    "Hard stop loss: 1.5% below entry for longs, 1.5% above entry for shorts (Tone Vays always defines stop before entry)",
+    "Raise stop to breakeven once trade moves 1% in your favour — Tone Vays principle: 'no risk trades'"
   ],
 
   "risk_rules": [
-    "Risk maximum 1% of portfolio per trade",
+    "Maximum 1% of portfolio at risk per trade — Tone Vays never risks more than this",
     "Maximum trade size capped by MAX_TRADE_SIZE_USD in .env",
     "Maximum trades per day capped by MAX_TRADES_PER_DAY in .env",
-    "Do not trade if price is more than 1.5% away from VWAP — overextended",
-    "Paper trade first — validate this strategy on your specific asset before going live"
+    "Do not trade if price is more than 1.5% away from VWAP — Tone Vays avoids chasing overextended moves",
+    "Do not trade if there is no clear weekly/daily alignment — when in doubt, stay out (core Tone Vays principle)",
+    "Paper trade first — Tone Vays always validates a strategy before risking real capital"
   ],
 
-  "notes": "Scalping strategy — designed for 1m to 5m timeframes. RSI(3) is intentionally fast and sensitive. Do not apply to higher timeframes."
+  "notes": "Tone Vays' actual system relies on Tom DeMark's proprietary Sequential indicator ('MRI buy/sell signals'). That indicator cannot be computed here without a TradingView connection. RSI(3) below 20 / above 80 is the closest measurable proxy for DeMark exhaustion signals. The philosophy — wait for trend exhaustion, confirm bias on multiple timeframes, use tight stops, never chase — is faithfully preserved. Timeframe: 4H. Asset: XBTUSDT on Kraken."
 }
