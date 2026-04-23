@@ -20,44 +20,10 @@ function checkOnboarding() {
   const required = ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"];
   const missing = required.filter((k) => !process.env[k]);
 
-  if (!existsSync(".env")) {
-    console.log(
-      "\n⚠️  No .env file found — opening it for you to fill in...\n",
-    );
-    writeFileSync(
-      ".env",
-      [
-        "# Alpaca Paper Trading credentials",
-        "ALPACA_API_KEY=",
-        "ALPACA_SECRET_KEY=",
-        "ALPACA_BASE_URL=https://paper-api.alpaca.markets",
-        "",
-        "# Trading config",
-        "PORTFOLIO_VALUE_USD=10000",
-        "MAX_TRADE_SIZE_USD=100",
-        "MAX_TRADES_PER_DAY=3",
-        "PAPER_TRADING=true",
-        "SYMBOL=XBTUSDT",
-        "TIMEFRAME=4H",
-      ].join("\n") + "\n",
-    );
-    try {
-      execSync("open .env");
-    } catch {}
-    console.log(
-      "Fill in your Alpaca credentials in .env then re-run: node bot.js\n",
-    );
-    process.exit(0);
-  }
-
   if (missing.length > 0) {
-    console.log(`\n⚠️  Missing credentials in .env: ${missing.join(", ")}`);
-    console.log("Opening .env for you now...\n");
-    try {
-      execSync("open .env");
-    } catch {}
-    console.log("Add the missing values then re-run: node bot.js\n");
-    process.exit(0);
+    console.log(`\n⚠️  Missing credentials: ${missing.join(", ")}`);
+    console.log("Set these as environment variables and re-run: node bot.js\n");
+    process.exit(1);
   }
 
   // Always print the CSV location so users know where to find their trade log
