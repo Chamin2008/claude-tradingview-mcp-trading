@@ -89,9 +89,10 @@ function calcRSI(closes, period = 14) {
 
 // ─── Trade Tracking ───────────────────────────────────────────────────────────
 
-const STATE_FILE = "safety-check-log.json";
-const CSV_FILE   = "trades.csv";
-const CSV_HEADERS = "Date,Time (UTC),Symbol,Side,Amount USD,Order ID,Mode,Signal\n";
+const STATE_FILE    = "safety-check-log.json";
+const POSITION_FILE = "position.json";
+const CSV_FILE      = "trades.csv";
+const CSV_HEADERS   = "Date,Time (UTC),Symbol,Side,Amount USD,Order ID,Mode,Signal\n";
 
 function loadState() {
   if (!existsSync(STATE_FILE)) return { trades: [] };
@@ -105,6 +106,16 @@ function saveState(state) {
 function countTodaysTrades(state) {
   const today = new Date().toISOString().slice(0, 10);
   return state.trades.filter((t) => t.timestamp.startsWith(today) && t.orderPlaced).length;
+}
+
+function hasOpenPosition() {
+  if (!existsSync(POSITION_FILE)) return false;
+  const p = JSON.parse(readFileSync(POSITION_FILE, "utf8"));
+  return p.open === true;
+}
+
+function setPosition(open, price) {
+  writeFileSync(POSITION_FILE, JSON.stringify({ open, price, updated: new Date().toISOString() }, null, 2));
 }
 
 function initCsv() {
@@ -210,39 +221,32 @@ async function run() {
   console.log(`  RSI(14): ${rsi !== null ? rsi.toFixed(2) : "N/A"}`);
   console.log(`  Trend:   EMA3 is ${emaFastCurr > emaSlowCurr ? "ABOVE ↑ (bullish)" : "BELOW ↓ (bearish)"}`);
 
-  // Crossover detection
-  const bullishCross = emaFastPrev <= emaSlowPrev && emaFastCurr > emaSlowCurr;
-  const bearishCross = emaFastPrev >= emaSlowPrev && emaFastCurr < emaSlowCurr;
+  // State-based signal — fires whenever conditions are met
+  const bullish    = emaFastCurr > emaSlowCurr;
+  const inPosition = hasOpenPosition();
+  console.log(`  Position: ${inPosition ? "OPEN (holding BTC)" : "FLAT (no position)"}`);
 
-  // Determine signal
   console.log(`\n── Signal ${"─".repeat(47)}`);
 
   let signal = "NONE";
   let side   = null;
 
-  if (bullishCross) {
-    if (rsi !== null && rsi < 70) {
-      signal = "BUY";
-      side   = "buy";
-      console.log(`  🟢 BULLISH CROSS — EMA9 crossed above EMA21`);
-      console.log(`     RSI ${rsi.toFixed(2)} < 70 ✅`);
-    } else {
-      signal = "BUY_FILTERED";
-      console.log(`  🟡 Bullish cross detected but RSI ${rsi?.toFixed(2)} ≥ 70 — filtered`);
-    }
-  } else if (bearishCross) {
-    if (rsi !== null && rsi > 30) {
-      signal = "SELL";
-      side   = "sell";
-      console.log(`  🔴 BEARISH CROSS — EMA9 crossed below EMA21`);
-      console.log(`     RSI ${rsi.toFixed(2)} > 30 ✅`);
-    } else {
-      signal = "SELL_FILTERED";
-      console.log(`  🟡 Bearish cross detected but RSI ${rsi?.toFixed(2)} ≤ 30 — filtered`);
-    }
+  if (bullish && rsi !== null && rsi < 70 && !inPosition) {
+    signal = "BUY";
+    side   = "buy";
+    console.log(`  🟢 BUY — EMA3 above EMA8, RSI ${rsi.toFixed(2)} < 70, no open position`);
+  } else if (!bullish && rsi !== null && rsi > 30 && inPosition) {
+    signal = "SELL";
+    side   = "sell";
+    console.log(`  🔴 SELL — EMA3 below EMA8, RSI ${rsi.toFixed(2)} > 30, closing position`);
+  } else if (bullish && inPosition) {
+    signal = "HOLD";
+    console.log(`  🟡 HOLD — EMA3 above EMA8, already holding BTC`);
+  } else if (!bullish && !inPosition) {
+    signal = "WAIT";
+    console.log(`  ⏸  WAIT — EMA3 below EMA8, flat — waiting for bullish trend`);
   } else {
-    const direction = emaFastCurr > emaSlowCurr ? "UP" : "DOWN";
-    console.log(`  ⏸  No crossover — trend ${direction}, watching...`);
+    console.log(`  ⏸  No action — RSI filter blocked (RSI: ${rsi?.toFixed(2)})`);
   }
 
   // Execute trade
@@ -262,15 +266,6 @@ async function run() {
     paperTrading: CONFIG.paperTrading,
   };
 
-  if (side === "sell") {
-    const position = await getPosition();
-    if (!position || parseFloat(position.qty) <= 0) {
-      console.log(`  ⏭  Sell signal but no open BTC position — skipping`);
-      signal = "SELL_NO_POSITION";
-      side   = null;
-    }
-  }
-
   if (side) {
     entry.side      = side;
     entry.amountUSD = CONFIG.maxTradeSizeUSD;
@@ -278,21 +273,21 @@ async function run() {
     if (CONFIG.paperTrading) {
       entry.orderId     = `PAPER-${Date.now()}`;
       entry.orderPlaced = true;
-      console.log(`  📋 PAPER ${side.toUpperCase()} $${CONFIG.maxTradeSizeUSD} of ${CONFIG.symbol}`);
+      setPosition(side === "buy", price);
+      console.log(`  📋 PAPER ${side.toUpperCase()} $${CONFIG.maxTradeSizeUSD} of ${CONFIG.symbol} @ $${price.toFixed(2)}`);
       console.log(`     Order ID: ${entry.orderId}`);
     } else {
       try {
         const order      = await placeOrder(side, CONFIG.maxTradeSizeUSD);
         entry.orderId     = order.id;
         entry.orderPlaced = true;
+        setPosition(side === "buy", price);
         console.log(`  ✅ LIVE ${side.toUpperCase()} placed — ${order.id}`);
       } catch (err) {
         console.log(`  ❌ ORDER FAILED — ${err.message}`);
         entry.error = err.message;
       }
     }
-  } else if (signal === "NONE") {
-    console.log(`  ⏸  No action — waiting for crossover`);
   }
 
   // Save
