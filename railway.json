@@ -5,7 +5,7 @@
   },
   "deploy": {
     "startCommand": "node bot.js",
-    "cronSchedule": "0 */2 * * *",
+    "cronSchedule": "* * * * *",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }
