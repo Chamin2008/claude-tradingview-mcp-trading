@@ -16,7 +16,7 @@ function checkOnboarding() {
 
 const CONFIG = {
   symbol:          process.env.SYMBOL       || "BTC/USD",
-  timeframe:       process.env.TIMEFRAME    || "1m",
+  timeframe:       process.env.TIMEFRAME    || "5m",
   maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD  || "100"),
   maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY    || "100"),
   paperTrading:    process.env.PAPER_TRADING !== "false",
@@ -203,11 +203,11 @@ async function getPosition() {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run() {
-  // Hard kill after 55s — cron runs every minute, must not overlap
+  // Hard kill after 4.5min — cron runs every 5 minutes, must not overlap
   const killTimer = setTimeout(() => {
-    console.error("⚠️  55s timeout — forcing exit to avoid overlap with next cron run");
+    console.error("⚠️  270s timeout — forcing exit to avoid overlap with next cron run");
     process.exit(1);
-  }, 55_000);
+  }, 270_000);
   killTimer.unref();
 
   checkOnboarding();
