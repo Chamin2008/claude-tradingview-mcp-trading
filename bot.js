@@ -32,14 +32,21 @@ const TIMEFRAME_MAP = {
   "30m": "30Min", "1H": "1Hour", "4H": "4Hour", "1D": "1Day",
 };
 
+// ─── Fetch with timeout ───────────────────────────────────────────────────────
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const res = await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+  return res;
+}
+
 // ─── Market Data ──────────────────────────────────────────────────────────────
 
 async function fetchCandles(limit = 50) {
-  const tf = TIMEFRAME_MAP[CONFIG.timeframe] || "1Min";
+  const tf  = TIMEFRAME_MAP[CONFIG.timeframe] || "1Min";
   const url = `https://data.alpaca.markets/v1beta3/crypto/us/bars` +
-    `?symbols=${encodeURIComponent(CONFIG.symbol)}&timeframe=${tf}&limit=${limit}&sort=asc`;
+    `?symbols=${encodeURIComponent(CONFIG.symbol)}&timeframe=${tf}&limit=${limit}&sort=desc`;
 
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: {
       "APCA-API-KEY-ID":     CONFIG.alpaca.apiKey,
       "APCA-API-SECRET-KEY": CONFIG.alpaca.secretKey,
@@ -51,7 +58,7 @@ async function fetchCandles(limit = 50) {
   const bars = data.bars?.[CONFIG.symbol];
   if (!bars || bars.length === 0) throw new Error(`No candle data for ${CONFIG.symbol}`);
 
-  return bars.map((b) => ({
+  return bars.reverse().map((b) => ({
     time:   new Date(b.t).getTime(),
     open:   parseFloat(b.o),
     high:   parseFloat(b.h),
@@ -89,9 +96,8 @@ function calcRSI(closes, period = 14) {
 
 // ─── Trade Tracking ───────────────────────────────────────────────────────────
 
-const STATE_FILE    = "safety-check-log.json";
-const POSITION_FILE = "position.json";
-const CSV_FILE      = "trades.csv";
+const STATE_FILE = "safety-check-log.json";
+const CSV_FILE   = "trades.csv";
 const CSV_HEADERS   = "Date,Time (UTC),Symbol,Side,Amount USD,Order ID,Mode,Signal\n";
 
 function loadState() {
@@ -108,14 +114,26 @@ function countTodaysTrades(state) {
   return state.trades.filter((t) => t.timestamp.startsWith(today) && t.orderPlaced).length;
 }
 
-function hasOpenPosition() {
-  if (!existsSync(POSITION_FILE)) return false;
-  const p = JSON.parse(readFileSync(POSITION_FILE, "utf8"));
-  return p.open === true;
+async function hasOpenPosition() {
+  const pos = await getPosition();
+  return pos !== null && parseFloat(pos.qty) > 0;
 }
 
-function setPosition(open, price) {
-  writeFileSync(POSITION_FILE, JSON.stringify({ open, price, updated: new Date().toISOString() }, null, 2));
+async function closePosition() {
+  const symbol = CONFIG.symbol.replace("/", "");
+  const res = await fetchWithTimeout(
+    `${CONFIG.alpaca.baseUrl}/v2/positions/${symbol}`,
+    {
+      method: "DELETE",
+      headers: {
+        "APCA-API-KEY-ID":     CONFIG.alpaca.apiKey,
+        "APCA-API-SECRET-KEY": CONFIG.alpaca.secretKey,
+      },
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || JSON.stringify(data));
+  return data;
 }
 
 function initCsv() {
@@ -148,7 +166,7 @@ async function placeOrder(side, amountUSD) {
     notional:      amountUSD.toFixed(2),
   };
 
-  const res = await fetch(`${CONFIG.alpaca.baseUrl}/v2/orders`, {
+  const res = await fetchWithTimeout(`${CONFIG.alpaca.baseUrl}/v2/orders`, {
     method: "POST",
     headers: {
       "APCA-API-KEY-ID":     CONFIG.alpaca.apiKey,
@@ -164,8 +182,9 @@ async function placeOrder(side, amountUSD) {
 }
 
 async function getPosition() {
-  const res = await fetch(
-    `${CONFIG.alpaca.baseUrl}/v2/positions/${encodeURIComponent(CONFIG.symbol)}`,
+  const symbol = CONFIG.symbol.replace("/", "");
+  const res = await fetchWithTimeout(
+    `${CONFIG.alpaca.baseUrl}/v2/positions/${symbol}`,
     {
       headers: {
         "APCA-API-KEY-ID":     CONFIG.alpaca.apiKey,
@@ -174,13 +193,23 @@ async function getPosition() {
     }
   );
   if (res.status === 404) return null;
-  if (!res.ok) return null;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Position check failed (${res.status}): ${err.message || JSON.stringify(err)}`);
+  }
   return await res.json();
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run() {
+  // Hard kill after 55s — cron runs every minute, must not overlap
+  const killTimer = setTimeout(() => {
+    console.error("⚠️  55s timeout — forcing exit to avoid overlap with next cron run");
+    process.exit(1);
+  }, 55_000);
+  killTimer.unref();
+
   checkOnboarding();
   initCsv();
 
@@ -223,7 +252,7 @@ async function run() {
 
   // State-based signal — fires whenever conditions are met
   const bullish    = emaFastCurr > emaSlowCurr;
-  const inPosition = hasOpenPosition();
+  const inPosition = await hasOpenPosition();
   console.log(`  Position: ${inPosition ? "OPEN (holding BTC)" : "FLAT (no position)"}`);
 
   console.log(`\n── Signal ${"─".repeat(47)}`);
@@ -270,23 +299,17 @@ async function run() {
     entry.side      = side;
     entry.amountUSD = CONFIG.maxTradeSizeUSD;
 
-    if (CONFIG.paperTrading) {
-      entry.orderId     = `PAPER-${Date.now()}`;
+    try {
+      const order = side === "buy"
+        ? await placeOrder("buy", CONFIG.maxTradeSizeUSD)
+        : await closePosition();
+      entry.orderId     = order.id;
       entry.orderPlaced = true;
-      setPosition(side === "buy", price);
-      console.log(`  📋 PAPER ${side.toUpperCase()} $${CONFIG.maxTradeSizeUSD} of ${CONFIG.symbol} @ $${price.toFixed(2)}`);
-      console.log(`     Order ID: ${entry.orderId}`);
-    } else {
-      try {
-        const order      = await placeOrder(side, CONFIG.maxTradeSizeUSD);
-        entry.orderId     = order.id;
-        entry.orderPlaced = true;
-        setPosition(side === "buy", price);
-        console.log(`  ✅ LIVE ${side.toUpperCase()} placed — ${order.id}`);
-      } catch (err) {
-        console.log(`  ❌ ORDER FAILED — ${err.message}`);
-        entry.error = err.message;
-      }
+      const modeLabel   = CONFIG.paperTrading ? "PAPER" : "LIVE";
+      console.log(`  ✅ ${modeLabel} ${side.toUpperCase()} placed — ${order.id}`);
+    } catch (err) {
+      console.log(`  ❌ ORDER FAILED — ${err.message}`);
+      entry.error = err.message;
     }
   }
 
@@ -299,7 +322,30 @@ async function run() {
   console.log(`${"═".repeat(57)}\n`);
 }
 
-run().catch((err) => {
-  console.error("Bot error:", err.message);
-  process.exit(1);
-});
+async function closeAll() {
+  checkOnboarding();
+  console.log(`\n${"═".repeat(57)}`);
+  console.log(`  Close All — ${CONFIG.symbol}`);
+  console.log(`${"═".repeat(57)}\n`);
+
+  const pos = await getPosition();
+  if (!pos || parseFloat(pos.qty) <= 0) {
+    console.log("  No open position — nothing to close.\n");
+    return;
+  }
+
+  console.log(`  Position: ${pos.qty} BTC @ avg $${parseFloat(pos.avg_entry_price).toFixed(2)}`);
+  console.log(`  Market value: $${parseFloat(pos.market_value).toFixed(2)}`);
+  console.log(`  Unrealised P&L: $${parseFloat(pos.unrealized_pl).toFixed(2)}\n`);
+
+  const order = await closePosition();
+  console.log(`  ✅ Close order placed — ${order.id}`);
+  console.log(`${"═".repeat(57)}\n`);
+}
+
+const cmd = process.argv[2];
+if (cmd === "--close-all") {
+  closeAll().catch((err) => { console.error("Error:", err.message); process.exit(1); });
+} else {
+  run().catch((err) => { console.error("Bot error:", err.message); process.exit(1); });
+}
