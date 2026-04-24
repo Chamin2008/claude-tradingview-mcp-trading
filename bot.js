@@ -196,23 +196,23 @@ async function run() {
   console.log(`  Price:   $${price.toFixed(2)}`);
 
   // Indicators — need full series for crossover detection
-  const ema9Series  = calcEMASeries(closes, 9);
-  const ema21Series = calcEMASeries(closes, 21);
-  const rsi         = calcRSI(closes, 14);
+  const emaFastSeries = calcEMASeries(closes, 3);
+  const emaSlowSeries = calcEMASeries(closes, 8);
+  const rsi           = calcRSI(closes, 14);
 
-  const ema9Curr  = ema9Series.at(-1);
-  const ema9Prev  = ema9Series.at(-2);
-  const ema21Curr = ema21Series.at(-1);
-  const ema21Prev = ema21Series.at(-2);
+  const emaFastCurr = emaFastSeries.at(-1);
+  const emaFastPrev = emaFastSeries.at(-2);
+  const emaSlowCurr = emaSlowSeries.at(-1);
+  const emaSlowPrev = emaSlowSeries.at(-2);
 
-  console.log(`  EMA(9):  $${ema9Curr.toFixed(2)}  (prev $${ema9Prev.toFixed(2)})`);
-  console.log(`  EMA(21): $${ema21Curr.toFixed(2)}  (prev $${ema21Prev.toFixed(2)})`);
+  console.log(`  EMA(3):  $${emaFastCurr.toFixed(2)}  (prev $${emaFastPrev.toFixed(2)})`);
+  console.log(`  EMA(8):  $${emaSlowCurr.toFixed(2)}  (prev $${emaSlowPrev.toFixed(2)})`);
   console.log(`  RSI(14): ${rsi !== null ? rsi.toFixed(2) : "N/A"}`);
-  console.log(`  Trend:   EMA9 is ${ema9Curr > ema21Curr ? "ABOVE ↑ (bullish)" : "BELOW ↓ (bearish)"}`);
+  console.log(`  Trend:   EMA3 is ${emaFastCurr > emaSlowCurr ? "ABOVE ↑ (bullish)" : "BELOW ↓ (bearish)"}`);
 
   // Crossover detection
-  const bullishCross = ema9Prev <= ema21Prev && ema9Curr > ema21Curr;
-  const bearishCross = ema9Prev >= ema21Prev && ema9Curr < ema21Curr;
+  const bullishCross = emaFastPrev <= emaSlowPrev && emaFastCurr > emaSlowCurr;
+  const bearishCross = emaFastPrev >= emaSlowPrev && emaFastCurr < emaSlowCurr;
 
   // Determine signal
   console.log(`\n── Signal ${"─".repeat(47)}`);
@@ -241,7 +241,7 @@ async function run() {
       console.log(`  🟡 Bearish cross detected but RSI ${rsi?.toFixed(2)} ≤ 30 — filtered`);
     }
   } else {
-    const direction = ema9Curr > ema21Curr ? "UP" : "DOWN";
+    const direction = emaFastCurr > emaSlowCurr ? "UP" : "DOWN";
     console.log(`  ⏸  No crossover — trend ${direction}, watching...`);
   }
 
@@ -253,7 +253,7 @@ async function run() {
     symbol:      CONFIG.symbol,
     timeframe:   CONFIG.timeframe,
     price,
-    indicators:  { ema9: ema9Curr, ema21: ema21Curr, rsi },
+    indicators:  { ema3: emaFastCurr, ema8: emaSlowCurr, rsi },
     signal,
     orderPlaced: false,
     orderId:     null,
