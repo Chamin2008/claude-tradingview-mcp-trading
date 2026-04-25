@@ -14,12 +14,15 @@ function checkOnboarding() {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
+const _maxTradeSize = parseFloat(process.env.MAX_TRADE_SIZE_USD || "100");
+
 const CONFIG = {
-  symbol:          process.env.SYMBOL       || "BTC/USD",
-  timeframe:       process.env.TIMEFRAME    || "5m",
-  maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD  || "100"),
-  maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY    || "100"),
-  paperTrading:    process.env.PAPER_TRADING !== "false",
+  symbol:              process.env.SYMBOL       || "BTC/USD",
+  timeframe:           process.env.TIMEFRAME    || "5m",
+  maxTradeSizeUSD:     _maxTradeSize,
+  maxTotalExposureUSD: parseFloat(process.env.MAX_TOTAL_EXPOSURE_USD || String(_maxTradeSize * 5)),
+  maxTradesPerDay:     parseInt(process.env.MAX_TRADES_PER_DAY    || "100"),
+  paperTrading:        process.env.PAPER_TRADING !== "false",
   alpaca: {
     apiKey:    process.env.ALPACA_API_KEY,
     secretKey: process.env.ALPACA_SECRET_KEY,
@@ -114,9 +117,10 @@ function countTodaysTrades(state) {
   return state.trades.filter((t) => t.timestamp.startsWith(today) && t.orderPlaced).length;
 }
 
-async function hasOpenPosition() {
+async function getPositionValue() {
   const pos = await getPosition();
-  return pos !== null && parseFloat(pos.qty) > 0;
+  if (!pos) return 0;
+  return parseFloat(pos.market_value) || 0;
 }
 
 async function closePosition() {
@@ -251,27 +255,28 @@ async function run() {
   console.log(`  Trend:   EMA3 is ${emaFastCurr > emaSlowCurr ? "ABOVE ↑ (bullish)" : "BELOW ↓ (bearish)"}`);
 
   // State-based signal — fires whenever conditions are met
-  const bullish    = emaFastCurr > emaSlowCurr;
-  const inPosition = await hasOpenPosition();
-  console.log(`  Position: ${inPosition ? "OPEN (holding BTC)" : "FLAT (no position)"}`);
+  const bullish       = emaFastCurr > emaSlowCurr;
+  const positionValue = await getPositionValue();
+  const canBuyMore    = positionValue + CONFIG.maxTradeSizeUSD <= CONFIG.maxTotalExposureUSD;
+  console.log(`  Position: $${positionValue.toFixed(2)} / $${CONFIG.maxTotalExposureUSD} max exposure`);
 
   console.log(`\n── Signal ${"─".repeat(47)}`);
 
   let signal = "NONE";
   let side   = null;
 
-  if (bullish && rsi !== null && rsi < 70 && !inPosition) {
+  if (bullish && rsi !== null && rsi < 70 && canBuyMore) {
     signal = "BUY";
     side   = "buy";
-    console.log(`  🟢 BUY — EMA3 above EMA8, RSI ${rsi.toFixed(2)} < 70, no open position`);
-  } else if (!bullish && rsi !== null && rsi > 30 && inPosition) {
+    console.log(`  🟢 BUY — EMA3 above EMA8, RSI ${rsi.toFixed(2)} < 70, exposure $${positionValue.toFixed(2)} → $${(positionValue + CONFIG.maxTradeSizeUSD).toFixed(2)}`);
+  } else if (!bullish && rsi !== null && rsi > 30 && positionValue > 0) {
     signal = "SELL";
     side   = "sell";
-    console.log(`  🔴 SELL — EMA3 below EMA8, RSI ${rsi.toFixed(2)} > 30, closing position`);
-  } else if (bullish && inPosition) {
+    console.log(`  🔴 SELL — EMA3 below EMA8, RSI ${rsi.toFixed(2)} > 30, selling $${CONFIG.maxTradeSizeUSD} of $${positionValue.toFixed(2)}`);
+  } else if (bullish && positionValue > 0 && !canBuyMore) {
     signal = "HOLD";
-    console.log(`  🟡 HOLD — EMA3 above EMA8, already holding BTC`);
-  } else if (!bullish && !inPosition) {
+    console.log(`  🟡 HOLD — EMA3 above EMA8, at max exposure $${positionValue.toFixed(2)}`);
+  } else if (!bullish && positionValue === 0) {
     signal = "WAIT";
     console.log(`  ⏸  WAIT — EMA3 below EMA8, flat — waiting for bullish trend`);
   } else {
@@ -300,9 +305,10 @@ async function run() {
     entry.amountUSD = CONFIG.maxTradeSizeUSD;
 
     try {
+      const sellAmount = Math.min(CONFIG.maxTradeSizeUSD, positionValue);
       const order = side === "buy"
         ? await placeOrder("buy", CONFIG.maxTradeSizeUSD)
-        : await closePosition();
+        : await placeOrder("sell", sellAmount);
       entry.orderId     = order.id;
       entry.orderPlaced = true;
       const modeLabel   = CONFIG.paperTrading ? "PAPER" : "LIVE";
