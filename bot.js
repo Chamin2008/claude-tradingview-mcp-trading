@@ -254,8 +254,9 @@ async function run() {
   console.log(`  RSI(14): ${rsi !== null ? rsi.toFixed(2) : "N/A"}`);
   console.log(`  Trend:   EMA3 is ${emaFastCurr > emaSlowCurr ? "ABOVE ↑ (bullish)" : "BELOW ↓ (bearish)"}`);
 
-  // State-based signal — fires whenever conditions are met
-  const bullish       = emaFastCurr > emaSlowCurr;
+  // Crossover-based signal — fires only on the transition event, not every tick
+  const crossedAbove  = emaFastPrev <= emaSlowPrev && emaFastCurr > emaSlowCurr;
+  const crossedBelow  = emaFastPrev >= emaSlowPrev && emaFastCurr < emaSlowCurr;
   const positionValue = await getPositionValue();
   const canBuyMore    = positionValue + CONFIG.maxTradeSizeUSD <= CONFIG.maxTotalExposureUSD;
   console.log(`  Position: $${positionValue.toFixed(2)} / $${CONFIG.maxTotalExposureUSD} max exposure`);
@@ -265,20 +266,20 @@ async function run() {
   let signal = "NONE";
   let side   = null;
 
-  if (bullish && rsi !== null && rsi < 70 && canBuyMore) {
+  if (crossedAbove && rsi !== null && rsi < 70 && canBuyMore) {
     signal = "BUY";
     side   = "buy";
-    console.log(`  🟢 BUY — EMA3 above EMA8, RSI ${rsi.toFixed(2)} < 70, exposure $${positionValue.toFixed(2)} → $${(positionValue + CONFIG.maxTradeSizeUSD).toFixed(2)}`);
-  } else if (!bullish && rsi !== null && rsi > 30 && positionValue > 0) {
+    console.log(`  🟢 BUY — EMA3 crossed above EMA8, RSI ${rsi.toFixed(2)} < 70, exposure $${positionValue.toFixed(2)} → $${(positionValue + CONFIG.maxTradeSizeUSD).toFixed(2)}`);
+  } else if (crossedBelow && rsi !== null && rsi > 30 && positionValue > 0) {
     signal = "SELL";
     side   = "sell";
-    console.log(`  🔴 SELL — EMA3 below EMA8, RSI ${rsi.toFixed(2)} > 30, selling $${CONFIG.maxTradeSizeUSD} of $${positionValue.toFixed(2)}`);
-  } else if (bullish && positionValue > 0 && !canBuyMore) {
+    console.log(`  🔴 SELL — EMA3 crossed below EMA8, RSI ${rsi.toFixed(2)} > 30, selling $${Math.min(CONFIG.maxTradeSizeUSD, positionValue).toFixed(2)} of $${positionValue.toFixed(2)}`);
+  } else if (emaFastCurr > emaSlowCurr && positionValue > 0) {
     signal = "HOLD";
-    console.log(`  🟡 HOLD — EMA3 above EMA8, at max exposure $${positionValue.toFixed(2)}`);
-  } else if (!bullish && positionValue === 0) {
+    console.log(`  🟡 HOLD — EMA3 above EMA8, holding $${positionValue.toFixed(2)}`);
+  } else if (emaFastCurr <= emaSlowCurr && positionValue === 0) {
     signal = "WAIT";
-    console.log(`  ⏸  WAIT — EMA3 below EMA8, flat — waiting for bullish trend`);
+    console.log(`  ⏸  WAIT — EMA3 below EMA8, flat — waiting for crossover`);
   } else {
     console.log(`  ⏸  No action — RSI filter blocked (RSI: ${rsi?.toFixed(2)})`);
   }
