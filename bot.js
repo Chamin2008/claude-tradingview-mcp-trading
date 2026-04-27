@@ -17,11 +17,12 @@ function checkOnboarding() {
 const _maxTradeSize = parseFloat(process.env.MAX_TRADE_SIZE_USD || "100");
 
 const CONFIG = {
-  symbol:              process.env.SYMBOL       || "BTC/USD",
-  timeframe:           process.env.TIMEFRAME    || "5m",
+  symbol:              process.env.SYMBOL    || "BTC/USD",
+  timeframe:           "15m",                              // signal timeframe
+  trendTimeframe:      "4H",                               // macro trend filter
   maxTradeSizeUSD:     _maxTradeSize,
   maxTotalExposureUSD: parseFloat(process.env.MAX_TOTAL_EXPOSURE_USD || String(_maxTradeSize * 5)),
-  maxTradesPerDay:     parseInt(process.env.MAX_TRADES_PER_DAY    || "100"),
+  maxTradesPerDay:     parseInt(process.env.MAX_TRADES_PER_DAY || "100"),
   paperTrading:        process.env.PAPER_TRADING !== "false",
   alpaca: {
     apiKey:    process.env.ALPACA_API_KEY,
@@ -44,8 +45,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
 
 // ─── Market Data ──────────────────────────────────────────────────────────────
 
-async function fetchCandles(limit = 50) {
-  const tf  = TIMEFRAME_MAP[CONFIG.timeframe] || "1Min";
+async function fetchCandles(timeframe, limit) {
+  const tf  = TIMEFRAME_MAP[timeframe] || "15Min";
   const url = `https://data.alpaca.markets/v1beta3/crypto/us/bars` +
     `?symbols=${encodeURIComponent(CONFIG.symbol)}&timeframe=${tf}&limit=${limit}&sort=desc`;
 
@@ -74,6 +75,7 @@ async function fetchCandles(limit = 50) {
 // ─── Indicators ───────────────────────────────────────────────────────────────
 
 function calcEMASeries(closes, period) {
+  if (closes.length < period) return [];
   const k = 2 / (period + 1);
   let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
   const series = [ema];
@@ -97,15 +99,30 @@ function calcRSI(closes, period = 14) {
   return 100 - 100 / (1 + (gains / period) / avgLoss);
 }
 
+function calcATR(candles, period = 14) {
+  if (candles.length < period + 1) return null;
+  const trs = candles.slice(1).map((c, i) => {
+    const prev = candles[i];
+    return Math.max(
+      c.high - c.low,
+      Math.abs(c.high - prev.close),
+      Math.abs(c.low  - prev.close),
+    );
+  });
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
 // ─── Trade Tracking ───────────────────────────────────────────────────────────
 
-const STATE_FILE = "safety-check-log.json";
-const CSV_FILE   = "trades.csv";
-const CSV_HEADERS   = "Date,Time (UTC),Symbol,Side,Amount USD,Order ID,Mode,Signal\n";
+const STATE_FILE  = "safety-check-log.json";
+const CSV_FILE    = "trades.csv";
+const CSV_HEADERS = "Date,Time (UTC),Symbol,Side,Qty,Amount USD,Stop Price,Order ID,Mode,Signal\n";
 
 function loadState() {
-  if (!existsSync(STATE_FILE)) return { trades: [] };
-  return JSON.parse(readFileSync(STATE_FILE, "utf8"));
+  if (!existsSync(STATE_FILE)) return { trades: [], stopPrice: null };
+  const s = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+  if (!("stopPrice" in s)) s.stopPrice = null;
+  return s;
 }
 
 function saveState(state) {
@@ -115,12 +132,6 @@ function saveState(state) {
 function countTodaysTrades(state) {
   const today = new Date().toISOString().slice(0, 10);
   return state.trades.filter((t) => t.timestamp.startsWith(today) && t.orderPlaced).length;
-}
-
-async function getPositionValue() {
-  const pos = await getPosition();
-  if (!pos) return 0;
-  return parseFloat(pos.market_value) || 0;
 }
 
 async function closePosition() {
@@ -150,9 +161,11 @@ function logToCsv(entry) {
     now.toISOString().slice(0, 10),
     now.toISOString().slice(11, 19),
     entry.symbol,
-    entry.side || "-",
-    entry.amountUSD || "-",
-    entry.orderId  || "-",
+    entry.side              || "-",
+    entry.qty?.toFixed(6)   || "-",
+    entry.amountUSD?.toFixed(2) || "-",
+    entry.stopPrice?.toFixed(2) || "-",
+    entry.orderId           || "-",
     entry.paperTrading ? "PAPER" : "LIVE",
     entry.signal,
   ].join(",");
@@ -204,14 +217,26 @@ async function getPosition() {
   return await res.json();
 }
 
+async function getAccountEquity() {
+  const res = await fetchWithTimeout(`${CONFIG.alpaca.baseUrl}/v2/account`, {
+    headers: {
+      "APCA-API-KEY-ID":     CONFIG.alpaca.apiKey,
+      "APCA-API-SECRET-KEY": CONFIG.alpaca.secretKey,
+    },
+  });
+  if (!res.ok) throw new Error(`Account fetch failed: ${res.status}`);
+  const data = await res.json();
+  return parseFloat(data.equity);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run() {
-  // Hard kill after 4.5min — cron runs every 5 minutes, must not overlap
+  // 14.5 min kill switch — cron runs every 15 min, must not overlap
   const killTimer = setTimeout(() => {
-    console.error("⚠️  270s timeout — forcing exit to avoid overlap with next cron run");
+    console.error("⚠️  870s timeout — forcing exit to avoid cron overlap");
     process.exit(1);
-  }, 270_000);
+  }, 870_000);
   killTimer.unref();
 
   checkOnboarding();
@@ -219,11 +244,10 @@ async function run() {
 
   const timestamp = new Date().toISOString();
   console.log(`\n${"═".repeat(57)}`);
-  console.log(`  Claude Bot — EMA Crossover | ${timestamp}`);
+  console.log(`  Claude Bot — 4H/15m EMA Strategy | ${timestamp}`);
   console.log(`  Mode: ${CONFIG.paperTrading ? "📋 PAPER TRADING" : "🔴 LIVE TRADING"}`);
   console.log(`${"═".repeat(57)}`);
 
-  // Daily limit check
   const state = loadState();
   const todayCount = countTodaysTrades(state);
   console.log(`\n  Trades today: ${todayCount}/${CONFIG.maxTradesPerDay}`);
@@ -232,100 +256,150 @@ async function run() {
     return;
   }
 
-  // Fetch candles
-  console.log(`\n── ${CONFIG.symbol} ${CONFIG.timeframe} candles ${"─".repeat(30)}`);
-  const candles  = await fetchCandles(50);
-  const closes   = candles.map((c) => c.close);
-  const price    = closes.at(-1);
-  console.log(`  Price:   $${price.toFixed(2)}`);
+  // Fetch both timeframes in parallel
+  console.log(`\n── Market Data ─────────────────────────────────────────`);
+  const [candles4h, candles15m] = await Promise.all([
+    fetchCandles("4H",  250),
+    fetchCandles("15m",  50),
+  ]);
 
-  // Indicators — need full series for crossover detection
-  const emaFastSeries = calcEMASeries(closes, 3);
-  const emaSlowSeries = calcEMASeries(closes, 8);
-  const rsi           = calcRSI(closes, 14);
+  const closes4h  = candles4h.map((c) => c.close);
+  const closes15m = candles15m.map((c) => c.close);
+  const price     = closes15m.at(-1);
+  console.log(`  Price:         $${price.toFixed(2)}`);
 
-  const emaFastCurr = emaFastSeries.at(-1);
-  const emaFastPrev = emaFastSeries.at(-2);
-  const emaSlowCurr = emaSlowSeries.at(-1);
-  const emaSlowPrev = emaSlowSeries.at(-2);
+  // 4H trend filter — EMA 200
+  const ema200Series = calcEMASeries(closes4h, 200);
+  const ema200_4h    = ema200Series.at(-1) ?? null;
+  const isUptrend    = ema200_4h !== null && price > ema200_4h;
+  console.log(`  EMA(200) 4H:   $${ema200_4h?.toFixed(2) ?? "N/A"}  ${isUptrend ? "↑ price above" : "↓ price below"}`);
 
-  console.log(`  EMA(3):  $${emaFastCurr.toFixed(2)}  (prev $${emaFastPrev.toFixed(2)})`);
-  console.log(`  EMA(8):  $${emaSlowCurr.toFixed(2)}  (prev $${emaSlowPrev.toFixed(2)})`);
-  console.log(`  RSI(14): ${rsi !== null ? rsi.toFixed(2) : "N/A"}`);
-  console.log(`  Trend:   EMA3 is ${emaFastCurr > emaSlowCurr ? "ABOVE ↑ (bullish)" : "BELOW ↓ (bearish)"}`);
+  // 15m entry indicators
+  const ema12Series = calcEMASeries(closes15m, 12);
+  const ema26Series = calcEMASeries(closes15m, 26);
+  const rsi         = calcRSI(closes15m, 14);
+  const atr         = calcATR(candles15m, 14);
 
-  // Crossover-based signal — fires only on the transition event, not every tick
-  const crossedAbove  = emaFastPrev <= emaSlowPrev && emaFastCurr > emaSlowCurr;
-  const crossedBelow  = emaFastPrev >= emaSlowPrev && emaFastCurr < emaSlowCurr;
-  const positionValue = await getPositionValue();
-  const canBuyMore    = positionValue + CONFIG.maxTradeSizeUSD <= CONFIG.maxTotalExposureUSD;
-  console.log(`  Position: $${positionValue.toFixed(2)} / $${CONFIG.maxTotalExposureUSD} max exposure`);
+  const ema12Curr = ema12Series.at(-1) ?? null;
+  const ema12Prev = ema12Series.at(-2) ?? null;
+  const ema26Curr = ema26Series.at(-1) ?? null;
+  const ema26Prev = ema26Series.at(-2) ?? null;
+
+  console.log(`  EMA(12) 15m:   $${ema12Curr?.toFixed(2) ?? "N/A"}  (prev $${ema12Prev?.toFixed(2) ?? "N/A"})`);
+  console.log(`  EMA(26) 15m:   $${ema26Curr?.toFixed(2) ?? "N/A"}  (prev $${ema26Prev?.toFixed(2) ?? "N/A"})`);
+  console.log(`  RSI(14):       ${rsi?.toFixed(2) ?? "N/A"}`);
+  console.log(`  ATR(14):       $${atr?.toFixed(2) ?? "N/A"}`);
+
+  if (ema12Curr === null || ema12Prev === null || ema26Curr === null || ema26Prev === null || rsi === null || atr === null || ema200_4h === null) {
+    console.log("\n⚠️  Not enough data for indicators — skipping.");
+    return;
+  }
+
+  // Crossover detection — transition only, not persistent state
+  const crossedAbove = ema12Prev <= ema26Prev && ema12Curr > ema26Curr;
+  const crossedBelow = ema12Prev >= ema26Prev && ema12Curr < ema26Curr;
+
+  const position      = await getPosition();
+  const positionValue = position ? parseFloat(position.market_value) || 0 : 0;
+  const hasPosition   = positionValue > 0;
+  console.log(`  Position:      $${positionValue.toFixed(2)}${state.stopPrice ? `  |  Stop: $${state.stopPrice.toFixed(2)}` : ""}`);
 
   console.log(`\n── Signal ${"─".repeat(47)}`);
 
-  let signal = "NONE";
-  let side   = null;
+  let signal         = "NONE";
+  let side           = null;
+  let tradeAmountUSD = 0;
+  let stopPrice      = null;
+  let qty            = 0;
 
-  if (crossedAbove && rsi !== null && rsi < 70 && canBuyMore) {
+  if (hasPosition && state.stopPrice && price <= state.stopPrice) {
+    // Stop loss breached — close immediately
+    signal = "STOP";
+    side   = "sell";
+    console.log(`  🛑 STOP HIT — price $${price.toFixed(2)} ≤ stop $${state.stopPrice.toFixed(2)}`);
+  } else if (!hasPosition && crossedAbove && isUptrend && rsi < 70) {
+    // Entry: EMA12 just crossed above EMA26, price above EMA200 4H, not overbought
+    const equity   = await getAccountEquity();
+    const stopDist = atr * 1.5;
+    stopPrice      = price - stopDist;
+    qty            = (equity * 0.01) / stopDist;
+    tradeAmountUSD = Math.min(qty * price, CONFIG.maxTradeSizeUSD);
+
     signal = "BUY";
     side   = "buy";
-    console.log(`  🟢 BUY — EMA3 crossed above EMA8, RSI ${rsi.toFixed(2)} < 70, exposure $${positionValue.toFixed(2)} → $${(positionValue + CONFIG.maxTradeSizeUSD).toFixed(2)}`);
-  } else if (crossedBelow && rsi !== null && rsi > 30 && positionValue > 0) {
+    console.log(`  🟢 BUY — EMA12 crossed above EMA26`);
+    console.log(`     Trend:  price > EMA200 4H ($${ema200_4h.toFixed(2)}) ✓`);
+    console.log(`     RSI:    ${rsi.toFixed(2)} < 70 ✓`);
+    console.log(`     Stop:   $${stopPrice.toFixed(2)}  (ATR×1.5 = $${stopDist.toFixed(2)})`);
+    console.log(`     Size:   $${tradeAmountUSD.toFixed(2)}  (1% of $${equity.toFixed(2)} equity)`);
+  } else if (hasPosition && crossedBelow) {
+    // Exit: EMA12 just crossed below EMA26
     signal = "SELL";
     side   = "sell";
-    console.log(`  🔴 SELL — EMA3 crossed below EMA8, RSI ${rsi.toFixed(2)} > 30, selling $${Math.min(CONFIG.maxTradeSizeUSD, positionValue).toFixed(2)} of $${positionValue.toFixed(2)}`);
-  } else if (emaFastCurr > emaSlowCurr && positionValue > 0) {
+    console.log(`  🔴 SELL — EMA12 crossed below EMA26, closing $${positionValue.toFixed(2)}`);
+  } else if (hasPosition) {
     signal = "HOLD";
-    console.log(`  🟡 HOLD — EMA3 above EMA8, holding $${positionValue.toFixed(2)}`);
-  } else if (emaFastCurr <= emaSlowCurr && positionValue === 0) {
-    signal = "WAIT";
-    console.log(`  ⏸  WAIT — EMA3 below EMA8, flat — waiting for crossover`);
+    console.log(`  🟡 HOLD — in position $${positionValue.toFixed(2)}, no exit signal`);
   } else {
-    console.log(`  ⏸  No action — RSI filter blocked (RSI: ${rsi?.toFixed(2)})`);
+    signal = "WAIT";
+    const reasons = [];
+    if (!crossedAbove) reasons.push("no fresh crossover");
+    if (!isUptrend)    reasons.push(`price below EMA200 4H ($${ema200_4h.toFixed(2)})`);
+    if (rsi >= 70)     reasons.push(`RSI overbought (${rsi.toFixed(2)})`);
+    console.log(`  ⏸  WAIT — ${reasons.join(", ") || "flat, watching for crossover"}`);
   }
 
-  // Execute trade
+  // ─── Execute ──────────────────────────────────────────────────────────────
+
   console.log(`\n── Action ${"─".repeat(47)}`);
 
   const entry = {
     timestamp,
     symbol:      CONFIG.symbol,
-    timeframe:   CONFIG.timeframe,
     price,
-    indicators:  { ema3: emaFastCurr, ema8: emaSlowCurr, rsi },
+    indicators:  { ema12: ema12Curr, ema26: ema26Curr, ema200_4h, rsi, atr },
     signal,
     orderPlaced: false,
     orderId:     null,
     side:        null,
     amountUSD:   null,
+    qty:         qty || null,
+    stopPrice,
     paperTrading: CONFIG.paperTrading,
   };
 
   if (side) {
     entry.side      = side;
-    entry.amountUSD = CONFIG.maxTradeSizeUSD;
+    entry.amountUSD = side === "buy" ? tradeAmountUSD : positionValue;
 
     try {
-      const sellAmount = Math.min(CONFIG.maxTradeSizeUSD, positionValue);
       const order = side === "buy"
-        ? await placeOrder("buy", CONFIG.maxTradeSizeUSD)
-        : await placeOrder("sell", sellAmount);
+        ? await placeOrder("buy", tradeAmountUSD)
+        : await closePosition();
       entry.orderId     = order.id;
       entry.orderPlaced = true;
       const modeLabel   = CONFIG.paperTrading ? "PAPER" : "LIVE";
       console.log(`  ✅ ${modeLabel} ${side.toUpperCase()} placed — ${order.id}`);
+
+      if (side === "buy") {
+        state.stopPrice = stopPrice;
+        console.log(`     Stop saved: $${stopPrice.toFixed(2)}`);
+      } else {
+        state.stopPrice = null;
+      }
     } catch (err) {
       console.log(`  ❌ ORDER FAILED — ${err.message}`);
       entry.error = err.message;
     }
+  } else {
+    console.log(`  No order placed.`);
   }
 
-  // Save
   state.trades.push(entry);
   saveState(state);
   logToCsv(entry);
 
-  console.log(`\n  Logged. Next check ~1 min.`);
+  console.log(`\n  Logged. Next check in ~15 min.`);
   console.log(`${"═".repeat(57)}\n`);
 }
 
@@ -347,6 +421,11 @@ async function closeAll() {
 
   const order = await closePosition();
   console.log(`  ✅ Close order placed — ${order.id}`);
+
+  const state = loadState();
+  state.stopPrice = null;
+  saveState(state);
+
   console.log(`${"═".repeat(57)}\n`);
 }
 
