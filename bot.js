@@ -267,6 +267,8 @@ async function run() {
   const closes15m = candles15m.map((c) => c.close);
   const price     = closes15m.at(-1);
   console.log(`  Price:         $${price.toFixed(2)}`);
+  console.log(`  4H bars:       ${candles4h.length}  (need ≥200 for EMA200)`);
+  console.log(`  15m bars:      ${candles15m.length}`);
 
   // 4H trend filter — EMA 200
   const ema200Series = calcEMASeries(closes4h, 200);
@@ -291,7 +293,14 @@ async function run() {
   console.log(`  ATR(14):       $${atr?.toFixed(2) ?? "N/A"}`);
 
   if (ema12Curr === null || ema12Prev === null || ema26Curr === null || ema26Prev === null || rsi === null || atr === null || ema200_4h === null) {
-    console.log("\n⚠️  Not enough data for indicators — skipping.");
+    const missing = [
+      ema200_4h  === null && `EMA200 4H (have ${candles4h.length} bars, need 200)`,
+      ema12Curr  === null && "EMA12 15m",
+      ema26Curr  === null && "EMA26 15m",
+      rsi        === null && "RSI",
+      atr        === null && "ATR",
+    ].filter(Boolean).join(", ");
+    console.log(`\n⚠️  Missing: ${missing} — skipping.`);
     return;
   }
 
