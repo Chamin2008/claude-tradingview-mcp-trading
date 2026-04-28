@@ -89,15 +89,21 @@ function calcEMASeries(closes, period) {
 
 function calcRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
+  // Wilder's smoothed RSI — matches TradingView
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff > 0) gains += diff;
-    else losses -= diff;
+    if (diff > 0) avgGain += diff; else avgLoss += Math.abs(diff);
   }
-  const avgLoss = losses / period;
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? Math.abs(diff) : 0)) / period;
+  }
   if (avgLoss === 0) return 100;
-  return 100 - 100 / (1 + (gains / period) / avgLoss);
+  return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
 function calcATR(candles, period = 14) {
@@ -313,6 +319,13 @@ async function run() {
   const position      = await getPosition();
   const positionValue = position ? parseFloat(position.market_value) || 0 : 0;
   const hasPosition   = positionValue > 0;
+
+  // Recover stop price if container restarted and wiped state (Railway cron is stateless)
+  if (hasPosition && !state.stopPrice && atr) {
+    const entryPrice    = parseFloat(position.avg_entry_price);
+    state.stopPrice     = entryPrice - atr * 1.5;
+    console.log(`  Stop recovered: $${state.stopPrice.toFixed(2)}  (entry $${entryPrice.toFixed(2)} − ATR×1.5)`);
+  }
   console.log(`  Position:      $${positionValue.toFixed(2)}${state.stopPrice ? `  |  Stop: $${state.stopPrice.toFixed(2)}` : ""}`);
 
   console.log(`\n── Signal ${"─".repeat(47)}`);
@@ -335,6 +348,7 @@ async function run() {
     stopPrice      = price - stopDist;
     qty            = (equity * 0.01) / stopDist;
     tradeAmountUSD = Math.min(qty * price, CONFIG.maxTradeSizeUSD);
+    qty            = tradeAmountUSD / price; // realign qty to capped size
 
     signal = "BUY";
     side   = "buy";
