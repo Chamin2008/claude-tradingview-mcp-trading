@@ -47,8 +47,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
 
 async function fetchCandles(timeframe, limit, startIso = null) {
   const tf  = TIMEFRAME_MAP[timeframe] || "15Min";
-  let url = `https://data.alpaca.markets/v1beta3/crypto/us/bars` +
-    `?symbols=${encodeURIComponent(CONFIG.symbol)}&timeframe=${tf}&limit=${limit}&sort=desc`;
+  let url = `https://data.alpaca.markets/v1beta3/crypto/bars` +
+    `?symbols=${encodeURIComponent(CONFIG.symbol)}&timeframe=${tf}&limit=${limit}&sort=asc`;
   if (startIso) url += `&start=${encodeURIComponent(startIso)}`;
 
   const res = await fetchWithTimeout(url, {
@@ -63,7 +63,7 @@ async function fetchCandles(timeframe, limit, startIso = null) {
   const bars = data.bars?.[CONFIG.symbol];
   if (!bars || bars.length === 0) throw new Error(`No candle data for ${CONFIG.symbol}`);
 
-  return bars.reverse().map((b) => ({
+  return bars.map((b) => ({
     time:   new Date(b.t).getTime(),
     open:   parseFloat(b.o),
     high:   parseFloat(b.h),
