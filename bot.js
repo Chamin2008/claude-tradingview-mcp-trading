@@ -45,10 +45,11 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
 
 // ─── Market Data ──────────────────────────────────────────────────────────────
 
-async function fetchCandles(timeframe, limit) {
+async function fetchCandles(timeframe, limit, startIso = null) {
   const tf  = TIMEFRAME_MAP[timeframe] || "15Min";
-  const url = `https://data.alpaca.markets/v1beta3/crypto/us/bars` +
+  let url = `https://data.alpaca.markets/v1beta3/crypto/us/bars` +
     `?symbols=${encodeURIComponent(CONFIG.symbol)}&timeframe=${tf}&limit=${limit}&sort=desc`;
+  if (startIso) url += `&start=${encodeURIComponent(startIso)}`;
 
   const res = await fetchWithTimeout(url, {
     headers: {
@@ -258,8 +259,9 @@ async function run() {
 
   // Fetch both timeframes in parallel
   console.log(`\n── Market Data ─────────────────────────────────────────`);
+  const start4h = new Date(Date.now() - 260 * 4 * 60 * 60 * 1000).toISOString();
   const [candles4h, candles15m] = await Promise.all([
-    fetchCandles("4H",  250),
+    fetchCandles("4H",  250, start4h),
     fetchCandles("15m",  50),
   ]);
 
