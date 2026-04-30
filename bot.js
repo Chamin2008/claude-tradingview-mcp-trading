@@ -31,10 +31,15 @@ const CONFIG = {
   },
 };
 
-const TIMEFRAME_MAP = {
-  "1m": "1Min", "5m": "5Min", "15m": "15Min",
-  "30m": "30Min", "1H": "1Hour", "4H": "4Hour", "1D": "1Day",
+const BYBIT_TF_MAP = {
+  "1m": "1", "5m": "5", "15m": "15",
+  "30m": "30", "1H": "60", "4H": "240", "1D": "D",
 };
+
+function toBybitSymbol(s) {
+  // BTC/USD → BTCUSDT
+  return s.replace("/", "").replace(/USD$/, "USDT");
+}
 
 // ─── Fetch with timeout ───────────────────────────────────────────────────────
 
@@ -45,31 +50,29 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
 
 // ─── Market Data ──────────────────────────────────────────────────────────────
 
-async function fetchCandles(timeframe, limit, startIso = null) {
-  const tf  = TIMEFRAME_MAP[timeframe] || "15Min";
-  let url = `https://data.alpaca.markets/v1beta3/crypto/us/bars` +
-    `?symbols=${encodeURIComponent(CONFIG.symbol)}&timeframe=${tf}&limit=${limit}&sort=asc`;
-  if (startIso) url += `&start=${encodeURIComponent(startIso)}`;
+async function fetchCandles(timeframe, limit) {
+  const interval = BYBIT_TF_MAP[timeframe] || "15";
+  const symbol   = toBybitSymbol(CONFIG.symbol);
+  const url      = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=${limit}`;
 
-  const res = await fetchWithTimeout(url, {
-    headers: {
-      "APCA-API-KEY-ID":     CONFIG.alpaca.apiKey,
-      "APCA-API-SECRET-KEY": CONFIG.alpaca.secretKey,
-    },
-  });
-  if (!res.ok) throw new Error(`Market data error: ${res.status}`);
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Market data error: ${res.status} — ${body}`);
+  }
   const data = await res.json();
+  if (data.retCode !== 0) throw new Error(`Market data error: ${data.retMsg}`);
+  const list = data.result?.list;
+  if (!list || list.length === 0) throw new Error(`No candle data for ${symbol}`);
 
-  const bars = data.bars?.[CONFIG.symbol];
-  if (!bars || bars.length === 0) throw new Error(`No candle data for ${CONFIG.symbol}`);
-
-  return bars.map((b) => ({
-    time:   new Date(b.t).getTime(),
-    open:   parseFloat(b.o),
-    high:   parseFloat(b.h),
-    low:    parseFloat(b.l),
-    close:  parseFloat(b.c),
-    volume: parseFloat(b.v),
+  // Bybit returns descending (newest first), reverse to ascending
+  return list.slice().reverse().map((b) => ({
+    time:   parseInt(b[0]),
+    open:   parseFloat(b[1]),
+    high:   parseFloat(b[2]),
+    low:    parseFloat(b[3]),
+    close:  parseFloat(b[4]),
+    volume: parseFloat(b[5]),
   }));
 }
 
@@ -253,6 +256,7 @@ async function run() {
   const timestamp = new Date().toISOString();
   console.log(`\n${"═".repeat(57)}`);
   console.log(`  Claude Bot — 4H/15m EMA Strategy | ${timestamp}`);
+  console.log(`  Symbol: ${CONFIG.symbol}  |  Data: ${toBybitSymbol(CONFIG.symbol)} via Bybit`);
   console.log(`  Mode: ${CONFIG.paperTrading ? "📋 PAPER TRADING" : "🔴 LIVE TRADING"}`);
   console.log(`${"═".repeat(57)}`);
 
@@ -264,10 +268,10 @@ async function run() {
     return;
   }
 
-  // Fetch both timeframes in parallel
+  // Fetch both timeframes in parallel (Binance, no auth required)
   console.log(`\n── Market Data ─────────────────────────────────────────`);
   const [candles4h, candles15m] = await Promise.all([
-    fetchCandles("4H", 1000),
+    fetchCandles("4H",  250),
     fetchCandles("15m",  50),
   ]);
 
