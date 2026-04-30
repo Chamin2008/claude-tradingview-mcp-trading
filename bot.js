@@ -31,14 +31,14 @@ const CONFIG = {
   },
 };
 
-const BYBIT_TF_MAP = {
-  "1m": "1", "5m": "5", "15m": "15",
-  "30m": "30", "1H": "60", "4H": "240", "1D": "D",
+const KRAKEN_TF_MAP = {
+  "1m": 1, "5m": 5, "15m": 15,
+  "30m": 30, "1H": 60, "4H": 240, "1D": 1440,
 };
 
-function toBybitSymbol(s) {
-  // BTC/USD → BTCUSDT
-  return s.replace("/", "").replace(/USD$/, "USDT");
+function toKrakenSymbol(s) {
+  // BTC/USD → XBTUSD (Kraken uses XBT for Bitcoin)
+  return s.replace("BTC", "XBT").replace("/", "");
 }
 
 // ─── Fetch with timeout ───────────────────────────────────────────────────────
@@ -51,9 +51,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
 // ─── Market Data ──────────────────────────────────────────────────────────────
 
 async function fetchCandles(timeframe, limit) {
-  const interval = BYBIT_TF_MAP[timeframe] || "15";
-  const symbol   = toBybitSymbol(CONFIG.symbol);
-  const url      = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  const interval = KRAKEN_TF_MAP[timeframe] || 15;
+  const symbol   = toKrakenSymbol(CONFIG.symbol);
+  const url      = `https://api.kraken.com/0/public/OHLC?pair=${symbol}&interval=${interval}`;
 
   const res = await fetchWithTimeout(url);
   if (!res.ok) {
@@ -61,18 +61,21 @@ async function fetchCandles(timeframe, limit) {
     throw new Error(`Market data error: ${res.status} — ${body}`);
   }
   const data = await res.json();
-  if (data.retCode !== 0) throw new Error(`Market data error: ${data.retMsg}`);
-  const list = data.result?.list;
-  if (!list || list.length === 0) throw new Error(`No candle data for ${symbol}`);
+  if (data.error?.length) throw new Error(`Market data error: ${data.error.join(", ")}`);
 
-  // Bybit returns descending (newest first), reverse to ascending
-  return list.slice().reverse().map((b) => ({
-    time:   parseInt(b[0]),
+  const key  = Object.keys(data.result).find((k) => k !== "last");
+  const bars = data.result[key];
+  if (!bars || bars.length === 0) throw new Error(`No candle data for ${symbol}`);
+
+  // Kraken returns ascending (oldest first), take the most recent `limit` bars
+  // Format: [time, open, high, low, close, vwap, volume, count]
+  return bars.slice(-limit).map((b) => ({
+    time:   parseInt(b[0]) * 1000,
     open:   parseFloat(b[1]),
     high:   parseFloat(b[2]),
     low:    parseFloat(b[3]),
     close:  parseFloat(b[4]),
-    volume: parseFloat(b[5]),
+    volume: parseFloat(b[6]),
   }));
 }
 
@@ -256,7 +259,7 @@ async function run() {
   const timestamp = new Date().toISOString();
   console.log(`\n${"═".repeat(57)}`);
   console.log(`  Claude Bot — 4H/15m EMA Strategy | ${timestamp}`);
-  console.log(`  Symbol: ${CONFIG.symbol}  |  Data: ${toBybitSymbol(CONFIG.symbol)} via Bybit`);
+  console.log(`  Symbol: ${CONFIG.symbol}  |  Data: ${toKrakenSymbol(CONFIG.symbol)} via Kraken`);
   console.log(`  Mode: ${CONFIG.paperTrading ? "📋 PAPER TRADING" : "🔴 LIVE TRADING"}`);
   console.log(`${"═".repeat(57)}`);
 
